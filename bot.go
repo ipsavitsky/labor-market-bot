@@ -7,8 +7,17 @@ import (
 	_ "github.com/lib/pq"
 	tb "gopkg.in/tucnak/telebot.v2"
 	"log"
+	"strconv"
 	"time"
 )
+
+type pendingRequest struct {
+	message        string
+	price          float64
+	expirationDate string
+}
+
+type requestRepo map[int]*pendingRequest
 
 func errCheck(err error) {
 	if err != nil {
@@ -16,11 +25,7 @@ func errCheck(err error) {
 	}
 }
 
-func main() {
-
-	p, err := configparser.NewConfigParserFromFile("default.cfg")
-	errCheck(err)
-
+func processDbQuery(p *configparser.ConfigParser, query string) {
 	dbDriver, err := p.Get("DB", "DRIVER")
 	errCheck(err)
 
@@ -30,9 +35,19 @@ func main() {
 	_, err = sqlx.Open(dbDriver, dbCreds)
 	errCheck(err)
 	log.Println("database connected!")
+}
+
+func main() {
+
+	p, err := configparser.NewConfigParserFromFile("default.cfg")
+	errCheck(err)
+
+	processDbQuery(p, "")
 
 	apiToken, err := p.Get("TELEGRAM", "API_TOKEN")
 	errCheck(err)
+
+	requests := make(requestRepo)
 
 	b, err := tb.NewBot(tb.Settings{
 		Token:  apiToken,
@@ -57,8 +72,24 @@ func main() {
 		if isReplyTo == nil {
 			return
 		} else if isReplyTo.Text == "Введите описание запроса пж" {
-			_, err := b.Send(m.Sender, "нихуя се че захотел?!\n"+m.Text)
+			log.Println(m.Text)
+			requests[m.Sender.ID] = &pendingRequest{message: m.Text}
+			_, err := b.Send(m.Sender, "Задайте предположительную дату выполнения реквеста", &tb.ReplyMarkup{
+				ForceReply: true,
+			})
 			errCheck(err)
+		} else if isReplyTo.Text == "Задайте предположительную дату выполнения реквеста" {
+			log.Println(m.Text)
+			requests[m.Sender.ID].expirationDate = m.Text
+			_, err := b.Send(m.Sender, "Задайте предположительную цену реквеста", &tb.ReplyMarkup{
+				ForceReply: true,
+			})
+			errCheck(err)
+		} else if isReplyTo.Text == "Задайте предположительную цену реквеста" {
+			log.Println(m.Text)
+			requests[m.Sender.ID].price, err = strconv.ParseFloat(m.Text, 64)
+			errCheck(err)
+			log.Println("пора бы в логи записать...", requests)
 		}
 	})
 
