@@ -1,9 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"github.com/bigkevmcd/go-configparser"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/google/logger"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	tb "gopkg.in/tucnak/telebot.v2"
@@ -13,17 +15,26 @@ import (
 )
 
 type Request struct {
-	Id             int64   `db:"id"`
-	Message        string  `db:"request_desc"`
-	Price          float64 `db:"price"`
-	ExpirationDate string  `db:"completion_time"`
+	//todo remove nullable where unnecessary
+	Id                 sql.NullInt64   `db:"id"`
+	UserID             sql.NullInt64   `db:"user_id"`
+	ExecutorID         sql.NullInt64   `db:"executor_id"`
+	UserName           sql.NullString  `db:"user_name"`
+	ExecutorName       sql.NullString  `db:"executor_name"`
+	UserChatId         sql.NullInt64   `db:"user_chat_id"`
+	ExecutorChatId     sql.NullInt64   `db:"executor_chat_id"`
+	RequestDescription sql.NullString  `db:"request_desc"`
+	State              sql.NullString  `db:"state"`
+	Price              sql.NullFloat64 `db:"price"`
+	CreationTime       sql.NullString  `db:"creation_time"`
+	CompletionDate     sql.NullString  `db:"completion_time"`
 }
 
 type requestRepo map[int]*Request
 
 func errCheck(err error) {
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 }
 
@@ -37,7 +48,7 @@ func processDbQuery(p *configparser.ConfigParser, query string) {
 	db, err := sqlx.Open(dbDriver, dbCreds)
 	errCheck(err)
 
-	log.Println("database connected!")
+	logger.Infoln("database connected!")
 
 	db.MustExec(query)
 }
@@ -52,9 +63,9 @@ func processDbSelectQuery(p *configparser.ConfigParser, selectQuery string) []Re
 	db, err := sqlx.Open(dbDriver, dbCreds)
 	errCheck(err)
 
-	log.Println("database connected!")
+	logger.Infoln("database connected!")
 
-	res := []Request{}
+	var res []Request
 
 	err = db.Select(&res, selectQuery)
 	errCheck(err)
@@ -72,7 +83,7 @@ func getLastId(p *configparser.ConfigParser) int {
 	db, err := sqlx.Open(dbDriver, dbCreds)
 	errCheck(err)
 
-	log.Println("database connected!")
+	logger.Infoln("database connected!")
 
 	res := struct {
 		id int `db:"last_insert_id()"`
@@ -109,10 +120,10 @@ func main() {
 	})
 
 	b.Handle("/list_requests", func(m *tb.Message) {
-		reqArr := processDbSelectQuery(p, "select id, request_desc, price, completion_time from requests")
+		reqArr := processDbSelectQuery(p, "select * from requests")
 		//log.Println("lines retrieved: " + string(len(reqArr)))
 		for _, curReq := range reqArr {
-			_, err := b.Send(m.Sender, fmt.Sprintf("id: %d\nmessage: %s\nprice: %f\nexp_date: %s", curReq.Id, curReq.Message, curReq.Price, curReq.ExpirationDate))
+			_, err := b.Send(m.Sender, fmt.Sprintf("id: %d\nmessage: %s\nprice: %f\nexp_date: %s", curReq.Id, curReq.RequestDescription, curReq.Price, curReq.CompletionDate))
 			errCheck(err)
 		}
 	})
@@ -121,25 +132,40 @@ func main() {
 		reqArr := processDbSelectQuery(p, fmt.Sprintf("select id, request_desc, price, completion_time from requests where user_id = %d", m.Sender.ID))
 		//log.Println("lines retrieved: " + string(len(reqArr)))
 		for _, curReq := range reqArr {
-			_, err := b.Send(m.Sender, fmt.Sprintf("id: %d\nmessage: %s\nprice: %f\nexp_date: %s", curReq.Id, curReq.Message, curReq.Price, curReq.ExpirationDate))
+			_, err := b.Send(m.Sender, fmt.Sprintf("id: %d\nmessage: %s\nprice: %f\nexp_date: %s", curReq.Id, curReq.RequestDescription, curReq.Price, curReq.CompletionDate))
 			errCheck(err)
 		}
 	})
 
+	b.Handle("/accept", func(m *tb.Message) {
+		requestId, err := strconv.Atoi(m.Payload)
+		errCheck(err)
+		//search the fucking db
+		reqArr := processDbSelectQuery(p, fmt.Sprintf("select id, request_desc, price, completion_time from requests where id = %d", requestId))
+		if len(reqArr) == 1 {
+			_, err = b.Send(m.Sender, fmt.Sprintf("your request is found!"))
+		} else if len(reqArr) == 0 {
+			_, err = b.Send(m.Sender, fmt.Sprintf("your request is NOT found!"))
+		} else {
+			//todo fucking die
+		}
+	})
+
 	b.Handle(tb.OnText, func(m *tb.Message) {
+		//todo make unadressable individually
 		isReplyTo := m.ReplyTo
 		if isReplyTo == nil {
 			return
 		} else if isReplyTo.Text == "Введите описание запроса пж" {
 			log.Println(m.Text)
-			requests[m.Sender.ID] = &Request{Message: m.Text}
+			requests[m.Sender.ID] = &Request{RequestDescription: sql.NullString{String: m.Text, Valid: true}}
 			_, err := b.Send(m.Sender, "Задайте предположительную дату выполнения реквеста", &tb.ReplyMarkup{
 				ForceReply: true,
 			})
 			errCheck(err)
 		} else if isReplyTo.Text == "Задайте предположительную дату выполнения реквеста" {
 			log.Println(m.Text)
-			requests[m.Sender.ID].ExpirationDate = m.Text
+			requests[m.Sender.ID].CompletionDate = sql.NullString{String: m.Text, Valid: true}
 			_, err = b.Send(m.Sender, "Задайте предположительную цену реквеста", &tb.ReplyMarkup{
 				ForceReply: true,
 			})
@@ -152,11 +178,13 @@ func main() {
 			//	todo do a loopback
 			//log.Println("DIE!!!!")
 			//}
-			requests[m.Sender.ID].Price, err = strconv.ParseFloat(m.Text, 64)
+			priceVal, err := strconv.ParseFloat(m.Text, 64)
 			errCheck(err)
+			requests[m.Sender.ID].Price = sql.NullFloat64{Float64: priceVal, Valid: true}
 			req := requests[m.Sender.ID]
-			strRequest := fmt.Sprintf("insert into requests (user_id, user_name, request_desc, price, completion_time) values (%d, '%s', '%s', %f, '%s')", m.Sender.ID, m.Sender.Username, req.Message, req.Price, req.ExpirationDate)
+			strRequest := fmt.Sprintf("insert into requests (user_id, user_name, request_desc, price, completion_time) values (%d, '%s', '%s', %f, '%s')", m.Sender.ID, m.Sender.Username, req.RequestDescription, req.Price, req.CompletionDate)
 			processDbQuery(p, strRequest)
+			//todo fix this shit
 			id := getLastId(p)
 			_, err = b.Send(m.Sender, fmt.Sprintf("Запрос %d успешно добавлен в базу", id))
 			errCheck(err)
